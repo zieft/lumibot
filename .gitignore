@@ -3,3 +3,4 @@
 /data
 .ENV
 /.idea
+/cache
