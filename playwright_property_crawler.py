@@ -17,7 +17,11 @@ class PlaywrightPropertyScraper(ABC):
 
     def __init__(self):
         """初始化爬虫基类"""
-        pass
+        self.crawler = None  # 将由爬虫主类设置
+
+    def set_crawler(self, crawler):
+        """设置爬虫主类引用，以便访问其目录结构"""
+        self.crawler = crawler
 
     @abstractmethod
     def get_property_links(self, page: Page, base_url: str, params: Dict[str, Any], pages: int) -> List[str]:
@@ -181,8 +185,11 @@ class KleinanzeigenPlaywrightScraper(PlaywrightPropertyScraper):
             except Exception as e:
                 print(f"处理第{i}页时发生错误: {e}")
                 # 保存当前页面截图和HTML以便调试
-                page.screenshot(path=f"error_page_{i}.png")
-                with open(f"error_page_{i}.html", "w", encoding="utf-8") as f:
+                error_screenshot_path = os.path.join(self.screenshots_dir, f"error_page_{i}.png")
+                error_html_path = os.path.join(self.debug_html_dir, f"error_page_{i}.html")
+
+                page.screenshot(path=error_screenshot_path)
+                with open(error_html_path, "w", encoding="utf-8") as f:
                     f.write(page.content())
 
         return links
@@ -218,7 +225,8 @@ class KleinanzeigenPlaywrightScraper(PlaywrightPropertyScraper):
 
             # 保存当前页面截图以便分析
             page_id = self.extract_property_id(url)
-            page.screenshot(path=f"page_{page_id}.png")
+            screenshot_path = os.path.join(self.crawler.screenshots_dir, f"page_{page_id}.png")
+            page.screenshot(path=screenshot_path)
 
             # 直接从浏览器中提取文本内容，不依赖特定的选择器
             text = page.evaluate("""() => {
@@ -486,7 +494,9 @@ class ImmobilienScout24PlaywrightScraper(PlaywrightPropertyScraper):
                     print("未能找到房源列表，尝试使用备用方法...")
 
                     # 保存页面以便调试
-                    page.screenshot(path=f"no_cards_page_{i}.png")
+                    no_cards_screenshot_path = os.path.join(self.crawler.screenshots_dir, f"no_cards_page_{i}.png")
+                    page.screenshot(path=no_cards_screenshot_path)
+                    print(f"已保存截图: {no_cards_screenshot_path}")
 
                     # 修改：备用提取方法 - 使用评估JavaScript获取链接
                     try:
@@ -544,9 +554,14 @@ class ImmobilienScout24PlaywrightScraper(PlaywrightPropertyScraper):
         except Exception as e:
             print(f"获取房源链接时发生错误: {e}")
             # 保存当前页面截图和HTML以便调试
-            page.screenshot(path="error_list_page.png")
-            with open("error_list_page.html", "w", encoding="utf-8") as f:
+            error_screenshot_path = os.path.join(self.crawler.screenshots_dir, "error_list_page.png")
+            error_html_path = os.path.join(self.crawler.debug_html_dir, "error_list_page.html")
+
+            page.screenshot(path=error_screenshot_path)
+            with open(error_html_path, "w", encoding="utf-8") as f:
                 f.write(page.content())
+
+            print(f"已保存错误截图和HTML: {error_screenshot_path}, {error_html_path}")
 
         return links
 
@@ -567,166 +582,133 @@ class ImmobilienScout24PlaywrightScraper(PlaywrightPropertyScraper):
             # 修改：随机初始等待
             page.wait_for_timeout(random.uniform(2000, 5000))
 
-            # 修改：使用更长的超时时间和加载事件
-            page.goto(url, wait_until="load", timeout=90000)
+            # 修改：使用更长的超时时间但不等待完全加载，使用domcontentloaded而不是load
+            print("开始导航到详情页...")
+            page.goto(url, wait_until="domcontentloaded", timeout=90000)
+            print("页面已初步加载，不等待所有资源")
 
-            # 等待页面加载完成
-            page.wait_for_load_state("networkidle", timeout=45000)
+            # 不等待networkidle，而是尽快执行后续操作
+            page.wait_for_timeout(2000)
 
-            # 修改：执行人类行为模拟
-            self.perform_human_like_behavior(page)
+            # 截图以供分析
+            property_id = self.extract_property_id(url)
+            screenshot_path = os.path.join(self.crawler.screenshots_dir, f"page_loaded_{property_id}.png")
+            page.screenshot(path=screenshot_path)
+            print(f"已保存页面截图: {screenshot_path}")
 
-            # 修改：增强Cookie处理逻辑
+            # 修改：执行人类行为模拟但减少其复杂性
             try:
-                cookie_selectors = [
-                    "button#consent-banner-btn-accept-all",
-                    "button[data-testid='uc-accept-all-button']",
-                    "button.consent-accept-all"
-                ]
+                # 简单的滚动操作
+                page.evaluate("window.scrollTo(0, 300)")
+                page.wait_for_timeout(1000)
+                page.evaluate("window.scrollTo(0, 600)")
+                page.wait_for_timeout(1000)
+                print("已执行基本滚动操作")
+            except Exception as e:
+                print(f"执行滚动操作时出错: {e}")
 
-                for selector in cookie_selectors:
-                    try:
-                        consent_button = page.query_selector(selector)
-                        if consent_button:
-                            consent_button.click()
-                            print(f"成功点击Cookie接受按钮: {selector}")
-                            page.wait_for_timeout(3000)
-                            break
-                    except Exception:
-                        continue
-            except Exception:
-                pass  # 忽略Cookie处理错误
-
-            # 修改：使用多个可能的选择器，并增加等待时间
-            selectors = [
-                ".is24-scoutad__splitter",
-                "div[data-testid='is24-expose-section']",
-                "div.is24-content",
-                "div#is24-content",
-                "main.main-container"
-            ]
-
-            found_selector = None
-            for selector in selectors:
-                try:
-                    if page.query_selector(selector):
-                        found_selector = selector
-                        print(f"找到内容选择器: {selector}")
-                        break
-                except Exception:
-                    continue
-
-            if found_selector:
-                page.wait_for_selector(found_selector, timeout=45000)
-            else:
-                print("未找到任何内容选择器，将尝试获取全页内容")
-
-            # 修改：执行更多滚动行为，确保所有内容都加载
-            total_height = page.evaluate("document.body.scrollHeight")
-            viewport_height = page.evaluate("window.innerHeight")
-
-            if total_height > viewport_height:
-                # 分段滚动，模拟阅读
-                steps = min(int(total_height / viewport_height) + 1, 10)  # 最多10次滚动
-                for i in range(1, steps + 1):
-                    # 滚动到页面指定百分比
-                    scroll_position = (i / steps) * total_height
-                    page.evaluate(f"window.scrollTo(0, {scroll_position})")
-
-                    # 模拟阅读行为，随机停留
-                    page.wait_for_timeout(random.uniform(1000, 3000))
-
-            # 获取页面内容
+            # 修改：直接尝试提取页面文本，不等待特定元素
+            print("开始提取页面内容...")
             content = page.content()
+            print("已获取到HTML内容，准备解析...")
 
             # 使用BeautifulSoup解析内容
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(content, 'html.parser')
 
             # 移除不需要的元素
-            for element in soup.select('header, footer, nav, script, style, .is24-scoutad-container'):
+            for element in soup.select('script, style, iframe, nav'):
                 if element:
                     element.decompose()
 
-            # 获取主要内容区域
-            main_content = None
-            content_selectors = [
-                ".is24-scoutad__splitter",
-                "div[data-testid='is24-expose-section']",
-                "div.is24-content",
-                "div#is24-content",
-                "main.main-container"
-            ]
-
-            for selector in content_selectors:
-                main_content = soup.select_one(selector)
-                if main_content:
+            # 获取标题 - 尝试多个可能的选择器
+            title = None
+            title_selectors = ['h1', 'h1.font-bold', '.is24qa-objekttitel']
+            for selector in title_selectors:
+                title_elem = soup.select_one(selector)
+                if title_elem:
+                    title = title_elem.get_text().strip()
+                    print(f"找到标题: {title}")
                     break
 
-            if main_content:
-                # 提取并清理文本
-                text = main_content.get_text(separator=" ").strip()
-                text = re.sub(r'\s+', ' ', text)  # 删除多余空白
+            # 获取价格 - 尝试多个可能的选择器
+            price = None
+            price_selectors = ['.is24qa-kaltmiete', '.is24-value.is24-value-font-strong']
+            for selector in price_selectors:
+                price_elem = soup.select_one(selector)
+                if price_elem:
+                    price = price_elem.get_text().strip()
+                    print(f"找到价格: {price}")
+                    break
 
-                # 添加原始URL
-                return text + f' Website: {url}'
+            # 获取地址 - 尝试多个可能的选择器
+            address = None
+            address_selectors = ['.address-with-map-link', '.is24qa-objektadresse']
+            for selector in address_selectors:
+                address_elem = soup.select_one(selector)
+                if address_elem:
+                    address = address_elem.get_text().strip()
+                    print(f"找到地址: {address}")
+                    break
+
+            # 提取所有正文内容
+            text = soup.get_text(separator=" ").strip()
+            text = re.sub(r'\s+', ' ', text)  # 删除多余空白
+
+            # 构建结构化结果
+            result = []
+            if title:
+                result.append(f"标题: {title}")
+            if price:
+                result.append(f"价格: {price}")
+            if address:
+                result.append(f"地址: {address}")
+
+            # 如果找到了结构化信息，使用结构化格式，否则使用完整文本
+            if result:
+                structured_text = " | ".join(result)
+                # 添加页面的关键文本内容，但限制长度
+                if len(text) > 2000:
+                    text = text[:2000] + "..."
+                full_result = f"{structured_text}\n\n摘要: {text}"
             else:
-                # 修改：增强备用提取方法
-                print("未找到主要内容区域，尝试提取结构化信息...")
+                # 限制文本长度以防止过长
+                if len(text) > 3000:
+                    text = text[:3000] + "..."
+                full_result = text
 
-                # 尝试使用JavaScript提取关键信息
-                property_info = page.evaluate("""() => {
-                    const info = {};
+            # 添加原始URL
+            final_result = full_result + f'\nWebsite: {url}'
 
-                    // 尝试提取标题
-                    const title = document.querySelector('h1');
-                    if (title) info.title = title.textContent.trim();
+            # 保存提取到的内容到文件
+            try:
+                content_file_path = os.path.join(self.crawler.content_files_dir, f"content_{property_id}.txt")
+                with open(content_file_path, "w", encoding="utf-8") as f:
+                    f.write(final_result)
+                print(f"已保存提取内容到: {content_file_path}")
+            except Exception as write_error:
+                print(f"保存内容到文件时出错: {write_error}")
 
-                    // 尝试提取价格
-                    const priceEl = document.querySelector('[data-testid="is24-expose-data-price"]') || 
-                                   document.querySelector('.is24-value.is24-value-font-strong');
-                    if (priceEl) info.price = priceEl.textContent.trim();
-
-                    // 尝试提取地址
-                    const addressEl = document.querySelector('[data-testid="is24-expose-address"]') ||
-                                     document.querySelector('.address-with-map-link');
-                    if (addressEl) info.address = addressEl.textContent.trim();
-
-                    // 提取所有详情字段
-                    const detailRows = document.querySelectorAll('.grid-item') || 
-                                      document.querySelectorAll('.criteriagroup .criteria');
-                    if (detailRows.length > 0) {
-                        info.details = Array.from(detailRows).map(row => row.textContent.trim()).join(' | ');
-                    }
-
-                    // 提取描述
-                    const descEl = document.querySelector('#contentDescription') ||
-                                  document.querySelector('.is24-long-text');
-                    if (descEl) info.description = descEl.textContent.trim();
-
-                    return info;
-                }""")
-
-                if property_info and (
-                        property_info.get('title') or property_info.get('price') or property_info.get('description')):
-                    # 将提取的信息转换为文本格式
-                    info_text = []
-                    for key, value in property_info.items():
-                        if value:
-                            info_text.append(f"{key}: {value}")
-
-                    text = " | ".join(info_text)
-                    return text + f' Website: {url}'
-                else:
-                    # 如果所有方法都失败，尝试获取整个页面内容
-                    text = soup.get_text(separator=" ").strip()
-                    text = re.sub(r'\s+', ' ', text)
-                    return text + f' Website: {url}'
+            return final_result
 
         except Exception as e:
             print(f"获取房源详情时出错: {e}")
             # 保存错误页面以便调试
-            page.screenshot(path=f"error_detail_{self.extract_property_id(url)}.png")
+            try:
+                error_screenshot_path = os.path.join(self.crawler.screenshots_dir,
+                                                     f"error_detail_{self.extract_property_id(url)}.png")
+                page.screenshot(path=error_screenshot_path)
+                print(f"已保存错误截图: {error_screenshot_path}")
+
+                # 保存当前页面源代码
+                error_html_path = os.path.join(self.crawler.debug_html_dir,
+                                               f"error_html_{self.extract_property_id(url)}.html")
+                with open(error_html_path, "w", encoding="utf-8") as f:
+                    f.write(page.content())
+                print(f"已保存错误页面HTML: {error_html_path}")
+            except Exception as save_error:
+                print(f"保存错误信息时出错: {save_error}")
+
             return None
 
     def extract_property_id(self, url: str) -> str:
@@ -767,6 +749,16 @@ class PropertyPlaywrightCrawler:
         # 确保输出目录存在
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
+
+        # 创建截图和调试文件的目录结构
+        self.screenshots_dir = os.path.join(output_dir, "screenshots")
+        self.debug_html_dir = os.path.join(output_dir, "debug_html")
+        self.content_files_dir = os.path.join(output_dir, "extracted_content")
+
+        # 确保所有目录都存在
+        os.makedirs(self.screenshots_dir, exist_ok=True)
+        os.makedirs(self.debug_html_dir, exist_ok=True)
+        os.makedirs(self.content_files_dir, exist_ok=True)
 
         # 如果未提供用户数据目录，创建一个临时目录
         if not self.user_data_dir:
@@ -813,6 +805,8 @@ class PropertyPlaywrightCrawler:
         # 遍历注册的爬虫，查找匹配的域名
         for domain_key, scraper in self.scrapers.items():
             if domain_key in domain:
+                # 设置爬虫实例的crawler引用
+                scraper.set_crawler(self)
                 return scraper
 
         print(f"不支持的网站域名: {domain}")
@@ -1101,7 +1095,9 @@ class PropertyPlaywrightCrawler:
             except Exception as e:
                 print(f"爬取过程中发生错误: {e}")
                 # 保存当前页面以便调试
-                page.screenshot(path="error_crawl.png")
+                error_screenshot_path = os.path.join(self.screenshots_dir, "error_crawl.png")
+                page.screenshot(path=error_screenshot_path)
+                print(f"已保存错误截图: {error_screenshot_path}")
 
             finally:
                 # 关闭浏览器上下文
